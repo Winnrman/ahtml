@@ -94,15 +94,63 @@ npm install -g ahtml
 ## Usage
 
 ```bash
+ahtml init                      # scaffold a new project interactively
+ahtml init my-project           # scaffold with a name
 ahtml my-app.ahtml              # run and open browser automatically
 ahtml my-app.ahtml --no-open    # run without opening browser
 ahtml my-app.ahtml --no-watch   # run without file watching
 ahtml --help
 ```
 
+## Quick start
+
+```bash
+git clone https://github.com/Winnrman/ahtml
+cd ahtml
+npm install
+node bin/ahtml.js init my-project
+cd my-project
+node ../bin/ahtml.js my-project.ahtml
+```
+
+`ahtml init` asks you one question — minimal or with database — then scaffolds a ready-to-run project. Pick your template, `cd` in, and you're writing your actual idea within 30 seconds.
+
 ---
 
-## The file format
+## `ahtml init`
+
+Scaffolds a new project interactively:
+
+```
+$ node bin/ahtml.js init my-project
+
+  ✦  ahtml init
+
+  Template:
+
+  ● Minimal       — server + client, no database
+  ○ With database — server + client + SQLite db
+
+  Enter number [1]: 2
+
+  ✦  created my-project/
+
+     my-project/
+     └── my-project.ahtml
+
+  To get started:
+
+     cd my-project
+     node ../bin/ahtml.js my-project.ahtml
+```
+
+Two templates are available:
+
+**Minimal** — a `<server>` with a working `/api/hello` route and a `<client>` that calls it. The simplest possible starting point.
+
+**With database** — a full CRUD list app with a `<db>` block, three API routes, and a clean frontend. A real starting point for any data-driven app.
+
+---
 
 An `.ahtml` file is made up of up to four blocks. Two are required, two are optional.
 
@@ -301,6 +349,7 @@ ahtml/
     client.js         ← injects style + hot reload script
     db.js             ← provisions SQLite via sql.js
     ports.js          ← finds free ports
+    init.js           ← scaffolds new projects
   test/
     test.js           ← parser test suite (18/18 passing)
     todo.ahtml        ← example: in-memory todo app
@@ -311,6 +360,7 @@ ahtml/
 
 ## Roadmap
 
+- [x] `ahtml init` — scaffold a new project interactively
 - [ ] `lang="python"` and `lang="bun"` server targets
 - [ ] `<client framework="react">` — JSX transpiled on the fly
 - [ ] `ahtml build` — bundle into a standalone executable (no Node required)
