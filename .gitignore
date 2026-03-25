@@ -1,0 +1,9 @@
+# generated files
+main.html
+*.db
+
+# dependencies
+node_modules/
+
+# temp files
+*.tmp
