@@ -4,41 +4,39 @@
 const path = require('path')
 const fs = require('fs')
 const { run } = require('../src/runtime')
+const { init } = require('../src/init')
 
 const args = process.argv.slice(2)
 const flags = new Set(args.filter(a => a.startsWith('--')))
-const files = args.filter(a => !a.startsWith('--'))
+const positional = args.filter(a => !a.startsWith('--'))
+const subcommand = positional[0]
 
-if (flags.has('--help') || flags.has('-h') || files.length === 0) {
+if (flags.has('--help') || flags.has('-h') || args.length === 0) {
   console.log(`
   ahtml — the self-launching web app runtime
 
   Usage:
-    ahtml <file.ahtml>          run a .ahtml file
-    ahtml <file.ahtml> --no-open  don't auto-open browser
+    ahtml init [name]            scaffold a new .ahtml project
+    ahtml <file.ahtml>           run a .ahtml file
+    ahtml <file.ahtml> --no-open   don't auto-open browser
     ahtml <file.ahtml> --no-watch  don't watch for changes
-    ahtml --version             print version
-    ahtml --help                show this help
+    ahtml --version              print version
+    ahtml --help                 show this help
 
-  File format:
-    <server lang="node">
-      // your Node.js server code
-      // use: app.get('/api/...', (req, res) => { ... })
-    </server>
-
-    <client>
-      <!-- your HTML -->
-    </client>
-
-    <env>
-      KEY=value
-    </env>
-
-    <style>
-      /* CSS auto-injected into your client */
-    </style>
+  Blocks:
+    <server lang="node">   Node.js backend (required)
+    <client>               HTML frontend (required)
+    <db type="sqlite">     SQLite schema, auto-provisioned
+    <style>                CSS injected into client
+    <env>                  KEY=value pairs → process.env
 `)
   process.exit(0)
+}
+
+// ahtml init [name]
+if (subcommand === 'init') {
+  init(positional[1])
+  return
 }
 
 if (flags.has('--version')) {
@@ -47,8 +45,8 @@ if (flags.has('--version')) {
   process.exit(0)
 }
 
-const target = files[0]
-if (!fs.existsSync(target)) {
+const target = positional[0]
+if (!target || !fs.existsSync(target)) {
   console.error(`[ahtml] file not found: ${target}`)
   process.exit(1)
 }
