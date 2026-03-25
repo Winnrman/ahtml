@@ -1,0 +1,108 @@
+<server lang="node">
+const todos = [
+  { id: 1, text: 'Try out ahtml', done: false },
+  { id: 2, text: 'Build something cool', done: false },
+];
+
+let nextId = 3;
+
+app.get('/api/todos', (req, res) => {
+  res.json(todos);
+});
+
+app.post('/api/todos', (req, res) => {
+  const todo = { id: nextId++, text: req.body.text, done: false };
+  todos.push(todo);
+  res.json(todo);
+});
+
+app.post('/api/todos/toggle', (req, res) => {
+  const todo = todos.find(t => t.id === req.body.id);
+  if (todo) todo.done = !todo.done;
+  res.json(todo || { error: 'not found' });
+});
+</server>
+
+<client>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>ahtml todo</title>
+</head>
+<body>
+  <div class="app">
+    <h1>todos <span class="badge" id="count">0</span></h1>
+    <div class="input-row">
+      <input id="new-todo" type="text" placeholder="type something to do..."></input>
+      <button onclick="addTodo()">add</button>
+    </div>
+    <ul id="list"></ul>
+  </div>
+
+  <script>
+    async function loadTodos() {
+      const todos = await fetch('/api/todos').then(r => r.json());
+      const list = document.getElementById('list');
+      list.innerHTML = '';
+      document.getElementById('count').textContent = todos.filter(t => !t.done).length;
+      todos.forEach(t => {
+        const li = document.createElement('li');
+        li.className = t.done ? 'done' : '';
+        li.innerHTML = `<span onclick="toggle(${t.id})">${t.text}</span>`;
+        list.appendChild(li);
+      });
+    }
+
+    async function addTodo() {
+      const input = document.getElementById('new-todo');
+      if (!input.value.trim()) return;
+      await fetch('/api/todos', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: input.value.trim() })
+      });
+      input.value = '';
+      loadTodos();
+    }
+
+    async function toggle(id) {
+      await fetch('/api/todos/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id })
+      });
+      loadTodos();
+    }
+
+    document.getElementById('new-todo').addEventListener('keydown', e => {
+      if (e.key === 'Enter') addTodo();
+    });
+
+    loadTodos();
+  </script>
+</body>
+</html>
+</client>
+
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, sans-serif; background: #f5f5f0; display: flex; justify-content: center; padding: 60px 20px; }
+.app { width: 100%; max-width: 480px; }
+h1 { font-size: 2.5rem; font-weight: 700; color: #1a1a1a; margin-bottom: 24px; display: flex; align-items: center; gap: 12px; }
+.badge { background: #6e0f27; color: white; font-size: 0.9rem; padding: 2px 10px; border-radius: 99px; }
+.input-row { display: flex; gap: 8px; margin-bottom: 20px; }
+input { flex: 1; padding: 10px 14px; border: 1.5px solid #ddd; border-radius: 8px; font-size: 1rem; outline: none; }
+input:focus { border-color: #6e0f27; }
+button { padding: 10px 18px; background: #6e0f27; color: white; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; }
+button:hover { background: #085041; }
+ul { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+li { background: white; padding: 14px 16px; border-radius: 10px; border: 1.5px solid #eee; cursor: pointer; transition: opacity 0.2s; }
+li span { font-size： 1rem; color: #1a1a1a; }
+li.done { opacity: 0.45; }
+li.done span { text-decoration: line-through; }
+</style>
+
+<env>
+APP_NAME=ahtml-todo
+</env>
