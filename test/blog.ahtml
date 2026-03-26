@@ -1,0 +1,477 @@
+<db type="sqlite">
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    author_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+</db>
+
+<server lang="node">
+  const crypto = require('crypto');
+
+  // ── helpers ──────────────────────────────────────────────────────────────
+
+  function hashPassword(password) {
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
+    return salt + ':' + hash;
+  }
+
+  function verifyPassword(password, stored) {
+    const [salt, hash] = stored.split(':');
+    const attempt = crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
+    return attempt === hash;
+  }
+
+  function randomToken() {
+    return crypto.randomBytes(32).toString('hex');
+  }
+
+  function parseCookies(cookieHeader) {
+    const cookies = {};
+    if (!cookieHeader) return cookies;
+    cookieHeader.split(';').forEach(c => {
+      const [k, ...v] = c.trim().split('=');
+      cookies[k.trim()] = v.join('=').trim();
+    });
+    return cookies;
+  }
+
+  function getSession(req) {
+    const cookies = parseCookies(req.headers.cookie);
+    const token = cookies.session;
+    if (!token) return null;
+    const session = db.get(
+      'SELECT s.*, u.id as user_id, u.username, u.email FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?',
+      [token]
+    );
+    return session || null;
+  }
+
+  function requireAuth(req, res) {
+    const session = getSession(req);
+    if (!session) {
+      res.status(401).json({ error: 'not authenticated' });
+      return null;
+    }
+    return session;
+  }
+
+  // ── auth routes ──────────────────────────────────────────────────────────
+
+  app.post('/api/auth/register', (req, res) => {
+    const { username, email, password } = req.body;
+    if (!username || !email || !password) {
+      res.status(400).json({ error: 'username, email and password required' });
+      return;
+    }
+    if (password.length < 6) {
+      res.status(400).json({ error: 'password must be at least 6 characters' });
+      return;
+    }
+    const existing = db.get('SELECT id FROM users WHERE username = ? OR email = ?', [username, email]);
+    if (existing) {
+      res.status(409).json({ error: 'username or email already taken' });
+      return;
+    }
+    const result = db.run(
+      'INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
+      [username, email, hashPassword(password)]
+    );
+    const token = randomToken();
+    db.run('INSERT INTO sessions (token, user_id) VALUES (?, ?)', [token, result.lastInsertRowid]);
+    res.set('Set-Cookie', 'session=' + token + '; HttpOnly; Path=/; SameSite=Lax');
+    res.json({ id: result.lastInsertRowid, username, email });
+  });
+
+  app.post('/api/auth/login', (req, res) => {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      res.status(400).json({ error: 'email and password required' });
+      return;
+    }
+    const user = db.get('SELECT * FROM users WHERE email = ?', [email]);
+    if (!user || !verifyPassword(password, user.password_hash)) {
+      res.status(401).json({ error: 'invalid email or password' });
+      return;
+    }
+    const token = randomToken();
+    db.run('INSERT INTO sessions (token, user_id) VALUES (?, ?)', [token, user.id]);
+    res.set('Set-Cookie', 'session=' + token + '; HttpOnly; Path=/; SameSite=Lax');
+    res.json({ id: user.id, username: user.username, email: user.email });
+  });
+
+  app.post('/api/auth/logout', (req, res) => {
+    const cookies = parseCookies(req.headers.cookie);
+    if (cookies.session) {
+      db.run('DELETE FROM sessions WHERE token = ?', [cookies.session]);
+    }
+    res.set('Set-Cookie', 'session=; HttpOnly; Path=/; Max-Age=0');
+    res.json({ ok: true });
+  });
+
+  app.get('/api/auth/me', (req, res) => {
+    const session = getSession(req);
+    if (!session) { res.status(401).json({ error: 'not authenticated' }); return; }
+    res.json({ id: session.user_id, username: session.username, email: session.email });
+  });
+
+  // ── post routes ──────────────────────────────────────────────────────────
+
+  app.get('/api/posts', (req, res) => {
+    const posts = db.query(
+      'SELECT p.*, u.username as author FROM posts p JOIN users u ON u.id = p.author_id ORDER BY p.created_at DESC'
+    );
+    res.json(posts);
+  });
+
+  app.get('/api/posts/:id', (req, res) => {
+    const id = req.url.split('/').pop().split('?')[0];
+    const post = db.get(
+      'SELECT p.*, u.username as author FROM posts p JOIN users u ON u.id = p.author_id WHERE p.id = ?',
+      [id]
+    );
+    if (!post) { res.status(404).json({ error: 'not found' }); return; }
+    res.json(post);
+  });
+
+  app.post('/api/posts', (req, res) => {
+    const session = requireAuth(req, res);
+    if (!session) return;
+    const { title, body } = req.body;
+    if (!title || !body) { res.status(400).json({ error: 'title and body required' }); return; }
+    const result = db.run(
+      'INSERT INTO posts (title, body, author_id) VALUES (?, ?, ?)',
+      [title, body, session.user_id]
+    );
+    res.json(db.get(
+      'SELECT p.*, u.username as author FROM posts p JOIN users u ON u.id = p.author_id WHERE p.id = ?',
+      [result.lastInsertRowid]
+    ));
+  });
+
+  app.delete('/api/posts', (req, res) => {
+    const session = requireAuth(req, res);
+    if (!session) return;
+    const post = db.get('SELECT * FROM posts WHERE id = ?', [req.body.id]);
+    if (!post) { res.status(404).json({ error: 'not found' }); return; }
+    if (post.author_id !== session.user_id) {
+      res.status(403).json({ error: 'you can only delete your own posts' });
+      return;
+    }
+    db.run('DELETE FROM posts WHERE id = ?', [req.body.id]);
+    res.json({ ok: true });
+  });
+</server>
+
+<client>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ahtml blog</title>
+</head>
+<body>
+  <header>
+    <a href="/" class="logo">✦ blog</a>
+    <nav id="nav"></nav>
+  </header>
+
+  <main id="app"></main>
+
+  <script>
+    // ── auth state ───────────────────────────────────────────────────────────
+    let currentUser = null;
+
+    async function loadUser() {
+      const res = await fetch('/api/auth/me');
+      currentUser = res.ok ? await res.json() : null;
+      renderNav();
+    }
+
+    function renderNav() {
+      document.getElementById('nav').innerHTML = currentUser
+        ? `<a href="/">Posts</a>
+           <a href="/new">Write</a>
+           <span class="nav-user">@${esc(currentUser.username)}</span>
+           <button class="nav-logout" onclick="logout()">Log out</button>`
+        : `<a href="/">Posts</a>
+           <a href="/login">Log in</a>
+           <a href="/register" class="btn-sm">Sign up</a>`;
+    }
+
+    async function logout() {
+      await fetch('/api/auth/logout', { method: 'POST' });
+      currentUser = null;
+      renderNav();
+      navigate('/');
+    }
+
+    // ── pages ────────────────────────────────────────────────────────────────
+
+    page('/', async () => {
+      const posts = await fetch('/api/posts').then(r => r.json());
+      if (!posts.length) return `
+        <div class="empty">
+          <p>No posts yet.</p>
+          ${currentUser
+            ? `<a href="/new" class="btn">Write the first one</a>`
+            : `<a href="/register" class="btn">Sign up to write</a>`}
+        </div>`;
+      return `
+        <div class="post-list">
+          ${posts.map(p => `
+            <article class="post-card" onclick="navigate('/post/${p.id}')">
+              <h2>${esc(p.title)}</h2>
+              <p>${esc(p.body).slice(0, 140)}${p.body.length > 140 ? '…' : ''}</p>
+              <div class="post-meta">
+                <span class="author">@${esc(p.author)}</span>
+                <span class="date">${fmt(p.created_at)}</span>
+              </div>
+            </article>
+          `).join('')}
+        </div>`;
+    });
+
+    page('/post/:id', async ({ params }) => {
+      const post = await fetch('/api/posts/' + params.id).then(r => r.json());
+      if (post.error) return `<div class="empty"><p>Post not found.</p><a href="/">← back</a></div>`;
+      const isOwner = currentUser && currentUser.id === post.author_id;
+      return `
+        <div class="post-full">
+          <a href="/" class="back">← all posts</a>
+          <h1>${esc(post.title)}</h1>
+          <div class="post-meta">
+            <span class="author">@${esc(post.author)}</span>
+            <span class="date">${fmt(post.created_at)}</span>
+          </div>
+          <div class="body">${esc(post.body)}</div>
+          ${isOwner ? `<button class="delete-btn" onclick="deletePost(${post.id})">Delete post</button>` : ''}
+        </div>`;
+    });
+
+    page('/new', () => {
+      if (!currentUser) { navigate('/login'); return; }
+      return `
+        <div class="post-form">
+          <h1>New post</h1>
+          <input id="p-title" type="text" placeholder="Title" autofocus>
+          <textarea id="p-body" placeholder="Write something..."></textarea>
+          <div class="form-actions">
+            <a href="/" class="btn-ghost">Cancel</a>
+            <button class="btn" onclick="submitPost()">Publish</button>
+          </div>
+        </div>`;
+    });
+
+    page('/login', () => {
+      if (currentUser) { navigate('/'); return; }
+      return `
+        <div class="auth-form">
+          <h1>Log in</h1>
+          <div id="auth-error" class="auth-error hidden"></div>
+          <input id="a-email" type="email" placeholder="Email" autofocus>
+          <input id="a-password" type="password" placeholder="Password">
+          <button class="btn" onclick="login()">Log in</button>
+          <p class="auth-switch">Don't have an account? <a href="/register">Sign up</a></p>
+        </div>`;
+    });
+
+    page('/register', () => {
+      if (currentUser) { navigate('/'); return; }
+      return `
+        <div class="auth-form">
+          <h1>Create account</h1>
+          <div id="auth-error" class="auth-error hidden"></div>
+          <input id="a-username" type="text" placeholder="Username" autofocus>
+          <input id="a-email" type="email" placeholder="Email">
+          <input id="a-password" type="password" placeholder="Password (min 6 chars)">
+          <button class="btn" onclick="register()">Create account</button>
+          <p class="auth-switch">Already have an account? <a href="/login">Log in</a></p>
+        </div>`;
+    });
+
+    page('/about', () => `
+      <div class="about">
+        <h1>About</h1>
+        <p>A multi-page blog with user accounts, login, sessions, and author attribution.</p>
+        <p>Running entirely inside a single <code>.ahtml</code> file — database, server, and frontend.</p>
+        <a href="/" class="btn">← back to posts</a>
+      </div>`);
+
+    // ── actions ──────────────────────────────────────────────────────────────
+
+    async function login() {
+      const email    = document.getElementById('a-email').value.trim();
+      const password = document.getElementById('a-password').value;
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+      const data = await res.json();
+      if (!res.ok) { showError(data.error); return; }
+      currentUser = data;
+      renderNav();
+      navigate('/');
+    }
+
+    async function register() {
+      const username = document.getElementById('a-username').value.trim();
+      const email    = document.getElementById('a-email').value.trim();
+      const password = document.getElementById('a-password').value;
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, email, password })
+      });
+      const data = await res.json();
+      if (!res.ok) { showError(data.error); return; }
+      currentUser = data;
+      renderNav();
+      navigate('/');
+    }
+
+    async function submitPost() {
+      const title = document.getElementById('p-title').value.trim();
+      const body  = document.getElementById('p-body').value.trim();
+      if (!title || !body) return;
+      const res = await fetch('/api/posts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, body })
+      });
+      if (res.status === 401) { navigate('/login'); return; }
+      const post = await res.json();
+      navigate('/post/' + post.id);
+    }
+
+    async function deletePost(id) {
+      if (!confirm('Delete this post?')) return;
+      await fetch('/api/posts', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id })
+      });
+      navigate('/');
+    }
+
+    function showError(msg) {
+      const el = document.getElementById('auth-error');
+      if (!el) return;
+      el.textContent = msg;
+      el.classList.remove('hidden');
+    }
+
+    // ── utils ────────────────────────────────────────────────────────────────
+
+    function esc(str) {
+      return String(str)
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    function fmt(dt) {
+      return new Date(dt).toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });
+    }
+
+    // ── boot ─────────────────────────────────────────────────────────────────
+    // Load the current user first, then let the router render the page
+    // so every page() handler has access to currentUser immediately.
+    loadUser();
+
+    // Enter key support on auth forms
+    document.addEventListener('keydown', e => {
+      if (e.key !== 'Enter') return;
+      if (document.getElementById('a-password')) {
+        if (document.getElementById('a-username')) register();
+        else login();
+      }
+      if (document.getElementById('p-title')) submitPost();
+    });
+  </script>
+</body>
+</html>
+</client>
+
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: system-ui, sans-serif; background: #f9f9f6; color: #1a1a1a; min-height: 100vh; }
+
+  /* header */
+  header { display: flex; align-items: center; justify-content: space-between; padding: 16px 40px; border-bottom: 1px solid #eee; background: white; position: sticky; top: 0; z-index: 10; }
+  .logo { font-size: 1.1rem; font-weight: 700; text-decoration: none; color: #1a1a1a; }
+  #nav { display: flex; align-items: center; gap: 20px; }
+  #nav a { text-decoration: none; color: #666; font-size: 0.9rem; transition: color 0.15s; }
+  #nav a:hover, #nav a.active { color: #0f6e56; }
+  .nav-user { font-size: 0.85rem; color: #0f6e56; font-weight: 500; }
+  .nav-logout { background: none; border: none; color: #aaa; font-size: 0.85rem; cursor: pointer; padding: 0; }
+  .nav-logout:hover { color: #e24b4a; }
+  .btn-sm { padding: 6px 14px; background: #0f6e56; color: white !important; border-radius: 6px; font-size: 0.85rem; }
+  .btn-sm:hover { background: #085041; }
+
+  /* layout */
+  main { max-width: 720px; margin: 0 auto; padding: 48px 24px; }
+
+  /* post list */
+  .post-list { display: flex; flex-direction: column; gap: 16px; }
+  .post-card { background: white; border: 1.5px solid #eee; border-radius: 12px; padding: 24px; cursor: pointer; transition: border-color 0.15s, transform 0.15s; }
+  .post-card:hover { border-color: #0f6e56; transform: translateY(-1px); }
+  .post-card h2 { font-size: 1.1rem; font-weight: 600; margin-bottom: 8px; }
+  .post-card p { color: #666; font-size: 0.9rem; line-height: 1.6; margin-bottom: 12px; }
+  .post-meta { display: flex; align-items: center; gap: 12px; }
+  .author { font-size: 0.8rem; color: #0f6e56; font-weight: 500; }
+  .date { font-size: 0.8rem; color: #aaa; }
+
+  /* post full */
+  .post-full { display: flex; flex-direction: column; gap: 16px; }
+  .post-full h1 { font-size: 2rem; font-weight: 700; line-height: 1.3; }
+  .post-full .body { font-size: 1rem; line-height: 1.8; color: #333; white-space: pre-wrap; margin-top: 8px; }
+  .back { color: #0f6e56; text-decoration: none; font-size: 0.9rem; }
+  .back:hover { text-decoration: underline; }
+  .delete-btn { align-self: flex-start; margin-top: 24px; padding: 8px 16px; background: none; border: 1.5px solid #eee; border-radius: 8px; color: #ccc; font-size: 0.85rem; cursor: pointer; }
+  .delete-btn:hover { border-color: #e24b4a; color: #e24b4a; }
+
+  /* forms */
+  .post-form, .auth-form { display: flex; flex-direction: column; gap: 14px; max-width: 480px; }
+  .post-form { max-width: 100%; }
+  .post-form h1, .auth-form h1 { font-size: 1.6rem; font-weight: 700; margin-bottom: 4px; }
+  input, textarea { width: 100%; padding: 11px 14px; border: 1.5px solid #ddd; border-radius: 10px; font-size: 0.95rem; font-family: inherit; outline: none; background: white; }
+  input:focus, textarea:focus { border-color: #0f6e56; }
+  textarea { min-height: 240px; resize: vertical; line-height: 1.7; }
+  .form-actions { display: flex; gap: 10px; justify-content: flex-end; }
+  .auth-error { background: #fff0f0; border: 1.5px solid #fcc; border-radius: 8px; padding: 10px 14px; color: #c00; font-size: 0.9rem; }
+  .auth-error.hidden { display: none; }
+  .auth-switch { font-size: 0.85rem; color: #999; text-align: center; }
+  .auth-switch a { color: #0f6e56; text-decoration: none; }
+
+  /* buttons */
+  .btn { display: inline-block; padding: 10px 20px; background: #0f6e56; color: white; border: none; border-radius: 8px; font-size: 0.95rem; cursor: pointer; text-decoration: none; text-align: center; }
+  .btn:hover { background: #085041; }
+  .btn-ghost { display: inline-block; padding: 10px 20px; border: 1.5px solid #ddd; border-radius: 8px; font-size: 0.95rem; color: #666; text-decoration: none; }
+  .btn-ghost:hover { border-color: #aaa; }
+
+  /* misc */
+  .empty { text-align: center; padding: 80px 0; display: flex; flex-direction: column; align-items: center; gap: 16px; color: #999; }
+  .about { display: flex; flex-direction: column; gap: 16px; max-width: 560px; }
+  .about h1 { font-size: 1.6rem; font-weight: 700; }
+  .about p { color: #555; line-height: 1.7; }
+  .about code { background: #f0f0ec; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
+</style>

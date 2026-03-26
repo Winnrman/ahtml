@@ -366,7 +366,6 @@ ahtml/
 - [ ] `ahtml build` — bundle into a standalone executable (no Node required)
 - [ ] WebSocket support
 - [ ] VS Code extension — per-block syntax highlighting
-- [ ] `ahtml init` — scaffold a new file interactively
 - [ ] npm publish under a unique package name
 
 ---

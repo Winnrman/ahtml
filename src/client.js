@@ -1,45 +1,61 @@
 'use strict'
 
+const fs = require('fs')
+const path = require('path')
+
 /**
  * Takes the raw <client> HTML and prepares it for serving.
  * - Injects <style> block content if present
+ * - Injects the ahtml client runtime (router) from router.js
  * - Injects the hot-reload polling script
- * - Injects a <base> tag so relative API paths resolve to the server port
+ *
+ * Global API available in every <client> block:
+ *
+ *   page(path, fn)     — register a route. fn receives { params, query }
+ *                        and returns an HTML string, a Node, or a Promise.
+ *   navigate(path)     — programmatically navigate to a path
+ *   link(path, label)  — returns an <a> string
+ *   router.params      — current route params e.g. { id: '42' }
+ *   router.query       — current query string as object
+ *   router.path        — current pathname
  */
 
-function prepareClient(html, { style, port, reloadToken }) {
+const ROUTER_SRC = fs.readFileSync(path.join(__dirname, 'router.js'), 'utf8')
+
+function inject(html, target, content) {
+  if (html.includes(target)) {
+    return html.replace(target, function() { return content + '\n' + target })
+  }
+  return content + '\n' + html
+}
+
+function prepareClient(html, { style, reloadToken }) {
   let out = html
 
-  // Inject scoped <style> block before </head> or at top
+  // Inject <style> block before </head>
   if (style) {
-    const styleTag = `<style>\n${style}\n</style>`
-    if (out.includes('</head>')) {
-      out = out.replace('</head>', `${styleTag}\n</head>`)
-    } else {
-      out = styleTag + '\n' + out
-    }
+    out = inject(out, '</head>', '<style>\n' + style + '\n</style>')
   }
+
+  // Inject the ahtml router runtime before </head>
+  out = inject(out, '</head>', '<script>\n' + ROUTER_SRC + '\n</script>')
 
   // Hot reload: poll /--ahtml-reload every 1.5s
-  // If the token changes (file was saved), do a full refresh
-  const reloadScript = `
-<script>
-(function() {
-  var token = ${JSON.stringify(reloadToken)};
-  setInterval(function() {
-    fetch('/--ahtml-reload')
-      .then(function(r) { return r.json(); })
-      .then(function(d) { if (d.token !== token) location.reload(); })
-      .catch(function() {});
-  }, 1500);
-})();
-</script>`
+  const reloadScript = [
+    '<script>',
+    '(function() {',
+    '  var token = "' + reloadToken + '";',
+    '  setInterval(function() {',
+    '    fetch("/--ahtml-reload")',
+    '      .then(function(r) { return r.json(); })',
+    '      .then(function(d) { if (d.token !== token) location.reload(); })',
+    '      .catch(function() {});',
+    '  }, 1500);',
+    '})();',
+    '</script>',
+  ].join('\n')
 
-  if (out.includes('</body>')) {
-    out = out.replace('</body>', `${reloadScript}\n</body>`)
-  } else {
-    out = out + '\n' + reloadScript
-  }
+  out = inject(out, '</body>', reloadScript)
 
   return out
 }
